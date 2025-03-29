@@ -40,60 +40,72 @@ if covid_data is None:
     st.error("Failed to load COVID-19 data. Please try again later.")
     st.stop()
 
-# Get the global data
-global_data = covid_data['global']
-last_updated = global_data.iloc[-1]['date'] if 'global' in covid_data else "Unknown"
+# Extract required datasets
+global_data = covid_data.get('global', None)
+country_data = covid_data.get('by_country', None)
 
-# Dashboard metadata in the sidebar
+if global_data is None or country_data is None:
+    st.error("Missing required data. Please check your dataset.")
+    st.stop()
+
+# Get last updated date
+last_updated = global_data.iloc[-1]['date'] if not global_data.empty else "Unknown"
+
+# Sidebar metadata
 st.sidebar.info(f"Data last updated: {last_updated}")
 
 # Global metrics at the top
 st.header("Global COVID-19 Metrics")
 
-# Calculate global metrics
-latest_data = global_data.iloc[-1]
-total_cases = int(latest_data['total_cases']) if 'total_cases' in latest_data else 0
-total_deaths = int(latest_data['total_deaths']) if 'total_deaths' in latest_data else 0
-total_recovered = int(latest_data['total_recovered']) if 'total_recovered' in latest_data else 0
-active_cases = total_cases - total_deaths - total_recovered
+# Get latest global metrics
+latest_data = global_data.iloc[-1] if not global_data.empty else None
 
-# Calculate growth rates
-week_ago_data = global_data.iloc[-8] if len(global_data) > 8 else global_data.iloc[0]
-cases_growth = ((latest_data['total_cases'] - week_ago_data['total_cases']) / week_ago_data['total_cases'] * 100) if week_ago_data['total_cases'] > 0 else 0
-deaths_growth = ((latest_data['total_deaths'] - week_ago_data['total_deaths']) / week_ago_data['total_deaths'] * 100) if week_ago_data['total_deaths'] > 0 else 0
+if latest_data is not None:
+    total_cases = int(latest_data.get('total_cases', 0))
+    total_deaths = int(latest_data.get('total_deaths', 0))
+    total_recovered = int(latest_data.get('total_recovered', 0))
+    active_cases = total_cases - total_deaths - total_recovered
 
-# Key metrics in columns with delta values
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Cases", utils.format_number(total_cases), f"{cases_growth:.1f}% in 7 days")
-col2.metric("Active Cases", utils.format_number(active_cases))
-col3.metric("Total Deaths", utils.format_number(total_deaths), f"{deaths_growth:.1f}% in 7 days")
-col4.metric("Total Recovered", utils.format_number(total_recovered))
+    # Growth rates
+    week_ago_data = global_data.iloc[-8] if len(global_data) > 8 else global_data.iloc[0]
+    cases_growth = ((latest_data['total_cases'] - week_ago_data['total_cases']) / week_ago_data['total_cases'] * 100) if week_ago_data['total_cases'] > 0 else 0
+    deaths_growth = ((latest_data['total_deaths'] - week_ago_data['total_deaths']) / week_ago_data['total_deaths'] * 100) if week_ago_data['total_deaths'] > 0 else 0
+
+    # Display key metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Cases", utils.format_number(total_cases), f"{cases_growth:.1f}% in 7 days")
+    col2.metric("Active Cases", utils.format_number(active_cases))
+    col3.metric("Total Deaths", utils.format_number(total_deaths), f"{deaths_growth:.1f}% in 7 days")
+    col4.metric("Total Recovered", utils.format_number(total_recovered))
+else:
+    st.warning("No global data available.")
 
 # Sidebar filters for global view
 st.sidebar.header("Global View Filters")
 
-# Date range selection
-end_date = pd.to_datetime(last_updated) if isinstance(last_updated, str) else pd.Timestamp.now()
-start_date = end_date - pd.Timedelta(days=90)  # Default to last 90 days
+# Set valid date range
+valid_start_date = pd.to_datetime(country_data['date'].min()).date()
+valid_end_date = pd.to_datetime(country_data['date'].max()).date()
 
+# Sidebar date selection
 date_range = st.sidebar.date_input(
     "Select Date Range",
-    value=(start_date.date(), end_date.date()),
-    min_value=pd.to_datetime(global_data['date'].min()).date(),
-    max_value=pd.to_datetime(global_data['date'].max()).date()
+    value=(valid_start_date, valid_end_date),
+    min_value=valid_start_date,
+    max_value=valid_end_date
 )
 
 # Filter data based on selected date range
 if len(date_range) == 2:
     start_date, end_date = date_range
     filtered_global_data = global_data[
-        (global_data['date'] >= pd.to_datetime(start_date)) & 
+        (global_data['date'] >= pd.to_datetime(start_date)) &
         (global_data['date'] <= pd.to_datetime(end_date))
     ]
 else:
     filtered_global_data = global_data
 
-# Show daily and cumulative trends
+# Show trends
 st.header("Global COVID-19 Trends")
 trend_tab1, trend_tab2 = st.tabs(["Daily Trends", "Cumulative Trends"])
 
@@ -109,14 +121,17 @@ with trend_tab2:
     except Exception as e:
         st.error(f"Error generating cumulative trends chart: {e}")
 
-# Calculate and display rolling averages
+# Moving averages
 st.header("7-Day Moving Averages")
 
-# Calculate 7-day rolling averages
-filtered_global_data['cases_7day_avg'] = filtered_global_data['new_cases'].rolling(window=7).mean()
-filtered_global_data['deaths_7day_avg'] = filtered_global_data['new_deaths'].rolling(window=7).mean()
+# Calculate moving averages
+if 'new_cases' in filtered_global_data.columns and 'new_deaths' in filtered_global_data.columns:
+    filtered_global_data['cases_7day_avg'] = filtered_global_data['new_cases'].rolling(window=7).mean()
+    filtered_global_data['deaths_7day_avg'] = filtered_global_data['new_deaths'].rolling(window=7).mean()
+else:
+    st.warning("New cases and deaths data unavailable for calculating moving averages.")
 
-# Create time series chart with moving averages
+# Plot moving averages
 fig = px.line(
     filtered_global_data,
     x='date',
@@ -132,20 +147,11 @@ fig = px.line(
 fig.update_layout(
     xaxis_title="Date",
     yaxis_title="7-Day Average",
-    legend=dict(
-        orientation="h",
-        yanchor="bottom",
-        y=1.02,
-        xanchor="right",
-        x=1
-    ),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     legend_title_text='',
     hovermode="x unified",
     height=500
 )
-
-# Update names in legend
-fig.for_each_trace(lambda t: t.update(name=t.name.replace("cases_7day_avg", "New Cases (7-day avg)").replace("deaths_7day_avg", "New Deaths (7-day avg)")))
 
 st.plotly_chart(fig, use_container_width=True)
 
@@ -162,14 +168,14 @@ metric_options = {
 
 selected_metric = st.selectbox("Select Metric for Top Countries", list(metric_options.keys()), format_func=lambda x: metric_options[x])
 
-# Get latest date data for country comparison
+# Get latest data for country comparison
 latest_date = filtered_global_data['date'].max()
-latest_data = covid_data['by_country'][covid_data['by_country']['date'] == latest_date]
+latest_data = country_data[country_data['date'] == latest_date]
 
-# Get top 10 countries for the selected metric
+# Get top 10 countries
 top_countries = latest_data.groupby('country')[selected_metric].sum().nlargest(10).reset_index()
 
-# Create bar chart
+# Plot top countries
 fig = px.bar(
     top_countries,
     x='country',
@@ -180,29 +186,22 @@ fig = px.bar(
     text=selected_metric
 )
 
-fig.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-fig.update_layout(xaxis_title="Country", yaxis_title=metric_options[selected_metric])
-
 st.plotly_chart(fig, use_container_width=True)
 
-# World map visualization
+# Global map
 st.header("Global Distribution")
 
-# Metric selection for map
-map_metric = st.selectbox("Select Metric for Map", 
-                         ['total_cases', 'total_deaths', 'new_cases', 'new_deaths'],
-                         format_func=lambda x: ' '.join(word.capitalize() for word in x.split('_')))
+map_metric = st.selectbox("Select Metric for Map", metric_options.keys(), format_func=lambda x: metric_options[x])
 
-# Create world map
-country_data_for_map = covid_data['by_country'][covid_data['by_country']['date'] == latest_date]
-try:
-    st.plotly_chart(visualizations.create_world_map(country_data_for_map, metric=map_metric), use_container_width=True)
-except Exception as e:
-    st.error(f"Error generating world map: {e}")
+if not latest_data.empty:
+    try:
+        st.plotly_chart(visualizations.create_world_map(latest_data, metric=map_metric), use_container_width=True)
+    except Exception as e:
+        st.error(f"Error generating world map: {e}")
+else:
+    st.warning("No country-level data available for visualization.")
 
 # Footer
 st.markdown("---")
-st.markdown("""
-**Data Source**: Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)  
-This dashboard provides an overview of global COVID-19 trends. Navigate to other pages for more detailed analysis.
-""")
+st.markdown("**Data Source**: JHU CSSE | This dashboard provides an overview of global COVID-19 trends.")
+
